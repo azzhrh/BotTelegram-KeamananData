@@ -1,0 +1,338 @@
+/**
+ * KONFIGURASI BOT & SPREADSHEET
+ */
+const ID_SPREADSHEET      = '1NS; // Pastikan ID benar
+const NAMA_SHEET_DATA     = 'Data Laporan'; 
+const NAMA_SHEET_LOG      = 'Log';
+
+const botHandle           = '@LaporanProdt';
+const TOKEN_BOT           = ''; 
+const URL_WEB_APP         = 'https://sQ/exec'; // Update setelah deploy baru
+
+// --- PENGATURAN ZONA WAKTU ---
+const ZONA_WAKTU          = 'GMT+8'; // WITA 
+const URL_API_TELEGRAM    = `https:///bot${TOKEN_BOT}`;
+
+// --- 1. FUNGSI UTAMA (DOPOST) ---
+function doPost(e) {
+  try {
+    if (!e || !e.postData) return;
+    const konten = JSON.parse(e.postData.contents);
+    const pesan = konten.message;
+    if (!pesan) return;
+
+    const idObrolan = pesan.chat.id;
+    const teksAsli = (pesan.text || pesan.caption || '').trim(); 
+    const teksLower = teksAsli.toLowerCase();
+    
+    // A. START
+    if (teksLower.startsWith('/start')) {
+        kirimPesanTelegram(idObrolan, "Halo! Bot Laporan Produktivitas Siap.\nKetik /format untuk mengambil template.", pesan.message_id);
+    }
+    
+    // B. FORMAT (Tanggal Kosong/Manual)
+    else if (teksLower.startsWith('/format')) {
+        const template = 
+`FORMAT LAPORAN PRODUKTIVITAS
+Tanggal : 
+Nama : 
+NIK : 
+Nama : 
+NIK : 
+
+PROGRES HARIAN
+- GGN Reguler / HSI / FFG :
+- PSB Tsel / HSI :
+- UNSPEK :
+- TANGIBLE / VALDAT :
+- GAMAS NodeB / TBG / LA / MTEL :
+- Preventif :
+- Lain-lain :`;
+        
+        kirimPesanTelegram(idObrolan, template, pesan.message_id);
+    }
+
+    // C. TERIMA LAPORAN
+    else if (teksAsli.includes('FORMAT LAPORAN') || (teksAsli.includes('GGN Reguler') && teksAsli.includes('NIK :'))) {
+       
+       const dataTerurai = uraikanPesanCerdas(teksAsli);
+
+       // --- VALIDASI 1: DATA DIRI (NAMA & NIK TEKNISI 1 - WAJIB) ---
+       const nama1 = dataTerurai.nama1;
+       const nik1  = dataTerurai.nik1;
+
+       if ((!nama1 || nama1 === '-') && (!nik1 || nik1 === '-')) {
+           kirimPesanTelegram(idObrolan, "⚠️ <b>Data Tidak Lengkap!</b>\nMohon isi Nama dan NIK Teknisi 1.", pesan.message_id);
+           return;
+       }
+       if (nama1 && nama1 !== '-' && (!nik1 || nik1 === '-')) {
+           kirimPesanTelegram(idObrolan, "⚠️ <b>NIK Teknisi 1 Wajib Diisi!</b>\nAnda mengisi Nama, tapi NIK kosong.", pesan.message_id);
+           return;
+       }
+       if (nik1 && nik1 !== '-' && (!nama1 || nama1 === '-')) {
+           kirimPesanTelegram(idObrolan, "⚠️ <b>Nama Teknisi 1 Wajib Diisi!</b>\nAnda mengisi NIK, tapi Nama kosong.", pesan.message_id);
+           return;
+       }
+
+       // --- VALIDASI 1.5: DATA DIRI (NAMA & NIK TEKNISI 2 - OPSIONAL TAPI BERPASANGAN) ---
+       // Jika Nama 2 diisi, NIK 2 wajib. Jika NIK 2 diisi, Nama 2 wajib.
+       const nama2 = dataTerurai.nama2;
+       const nik2  = dataTerurai.nik2;
+
+       if (nama2 && nama2 !== '-' && (!nik2 || nik2 === '-')) {
+           kirimPesanTelegram(idObrolan, "⚠️ <b>NIK Teknisi 2 Wajib Diisi!</b>\nAnda mengisi Nama Teknisi 2, tapi NIK-nya kosong.", pesan.message_id);
+           return;
+       }
+       if (nik2 && nik2 !== '-' && (!nama2 || nama2 === '-')) {
+           kirimPesanTelegram(idObrolan, "⚠️ <b>Nama Teknisi 2 Wajib Diisi!</b>\nAnda mengisi NIK Teknisi 2, tapi Nama-nya kosong.", pesan.message_id);
+           return;
+       }
+
+       // --- VALIDASI 2: CEK PROGRES KOSONG ---
+       const isGgnKosong     = (dataTerurai.ggn === '0' || dataTerurai.ggn === '-');
+       const isPsbKosong     = (dataTerurai.psb === '0' || dataTerurai.psb === '-');
+       const isUnspekKosong  = (dataTerurai.unspek === '0' || dataTerurai.unspek === '-');
+       const isTangibleKosong= (dataTerurai.tangible === '0' || dataTerurai.tangible === '-');
+       const isGamasKosong   = (dataTerurai.gamas === '0' || dataTerurai.gamas === '-');
+       const isPreventifKosong= (dataTerurai.preventif === '0' || dataTerurai.preventif === '-');
+       const isLainKosong    = (dataTerurai.lain === '-' || dataTerurai.lain === '0');
+
+       if (isGgnKosong && isPsbKosong && isUnspekKosong && isTangibleKosong && isGamasKosong && isPreventifKosong && isLainKosong) {
+           kirimPesanTelegram(idObrolan, "⚠️ <b>Laporan Ditolak!</b>\n\nAnda belum mengisi satupun <b>PROGRES HARIAN</b>", pesan.message_id);
+           return;
+       }
+
+       // --- PROSES SIMPAN ---
+       if (dataTerurai) {
+           dataTerurai.chatId = idObrolan; 
+           
+           const hasil = prosesDataKeSheet(dataTerurai);
+
+           let balasanBot = '';
+           if (hasil.status === 'baru') {
+              balasanBot = `✅ <b>Laporan Disimpan!</b>\n\n`;
+           } else {
+              balasanBot = `🔄 <b>Laporan Diupdate (Revisi)!</b>\n\n`;
+           }
+
+           balasanBot += `Tgl: ${dataTerurai.tanggal}\n` +
+                         `Tim: ${dataTerurai.nama1}\n` +
+                         `Duplikat: <b>${hasil.persen}%</b>\n` +
+                         `⚠️Status: <b>${hasil.infoPeringatan}</b>`;
+           
+           kirimPesanTelegram(idObrolan, balasanBot, pesan.message_id);
+       }
+    } 
+
+  } catch (error) {
+    catatLog('CRITICAL ERROR: ' + error.toString());
+  }
+}
+
+// --- 2. PARSER CERDAS (MULTI-LINE SUPPORT) ---
+function uraikanPesanCerdas(pesan) {
+  const baris = pesan.split('\n'); 
+  
+  let data = {
+    tanggal: '', nama1: '', nik1: '', nama2: '', nik2: '',
+    ggn: '', psb: '', unspek: '', tangible: '', gamas: '', preventif: '', lain: ''
+  };
+
+  let mode = 'header'; 
+  let kategoriAktif = null; 
+
+  const mapKategori = {
+    'ggn reguler': 'ggn',
+    'psb tsel': 'psb',
+    'unspek': 'unspek',
+    'tangible': 'tangible',
+    'gamas nodeb': 'gamas',
+    'preventif': 'preventif',
+    'lain-lain': 'lain'
+  };
+
+  let listNama = [];
+  let listNik = [];
+
+  for (let i = 0; i < baris.length; i++) {
+    let lineRaw = baris[i].trim();
+    let lineLower = lineRaw.toLowerCase();
+    
+    if (lineRaw === '') continue; 
+
+    if (lineLower.includes('progres harian')) {
+        mode = 'body'; 
+        continue;
+    }
+
+    if (mode === 'header') {
+        let value = '';
+        if (lineRaw.includes(':')) value = lineRaw.substring(lineRaw.indexOf(':') + 1).trim();
+
+        if (lineLower.startsWith('tanggal')) data.tanggal = value;
+        else if (lineLower.startsWith('nama')) listNama.push(value || '-');
+        else if (lineLower.startsWith('nik')) listNik.push(value || '-');
+    } 
+    else if (mode === 'body') {
+        let isJudulBaru = false;
+        for (let key in mapKategori) {
+            if (lineLower.startsWith('- ' + key) || lineLower.startsWith('-' + key) || lineLower.includes(key + ' :')) {
+                if (kategoriAktif && data[kategoriAktif] === '') data[kategoriAktif] = '0';
+                kategoriAktif = mapKategori[key]; 
+                
+                if (lineRaw.includes(':')) {
+                    let isiAwal = lineRaw.substring(lineRaw.indexOf(':') + 1).trim();
+                    if (isiAwal) data[kategoriAktif] = isiAwal;
+                }
+                isJudulBaru = true;
+                break;
+            }
+        }
+
+        if (!isJudulBaru && kategoriAktif) {
+            if (data[kategoriAktif]) {
+                data[kategoriAktif] += '\n' + lineRaw;
+            } else {
+                data[kategoriAktif] = lineRaw;
+            }
+        }
+    }
+  }
+
+  ['ggn', 'psb', 'unspek', 'tangible', 'gamas', 'preventif'].forEach(k => {
+      if (!data[k]) data[k] = '0';
+  });
+  if (!data.lain) data.lain = '-';
+
+  if (listNama.length > 0) data.nama1 = listNama[0];
+  if (listNik.length > 0)  data.nik1  = listNik[0];
+  if (listNama.length > 1 && !listNama[1].toLowerCase().includes('progres')) data.nama2 = listNama[1];
+  if (listNik.length > 1 && !listNik[1].toLowerCase().includes('progres'))  data.nik2  = listNik[1];
+
+  // FALLBACK: Jika user LUPA isi tanggal, baru diisi otomatis oleh sistem
+  if (!data.tanggal) data.tanggal = Utilities.formatDate(new Date(), ZONA_WAKTU, "dd-MM-yyyy");
+
+  return data;
+}
+
+// --- 3. PROSES DATA KE SHEET (AUTO WRAP TEXT) ---
+function prosesDataKeSheet(data) {
+  const ss = SpreadsheetApp.openById(ID_SPREADSHEET);
+  const sheet = ss.getSheetByName(NAMA_SHEET_DATA);
+  const lastRow = sheet.getLastRow();
+  
+  const inputString = [data.ggn, data.psb, data.unspek, data.tangible, data.gamas, data.preventif, data.lain]
+                      .join(" ").replace(/\n/g, " ").toLowerCase();
+
+  let maxPersen = 0;
+  let barisMirip = '-';
+  let peringatan = 'Aman';
+
+  if (lastRow > 1) {
+     const semuaData = sheet.getRange(2, 1, lastRow - 1, 13).getDisplayValues(); 
+     for (let i = 0; i < semuaData.length; i++) {
+        const rowNik = String(semuaData[i][3]); 
+        if (rowNik === String(data.nik1)) continue; 
+
+        const rowLaporan = [
+          semuaData[i][6], semuaData[i][7], semuaData[i][8], 
+          semuaData[i][9], semuaData[i][10], semuaData[i][11], semuaData[i][12]
+        ].join(" ").replace(/\n/g, " ").toLowerCase();
+
+        const persen = hitungSimilarity(inputString, rowLaporan);
+        if (persen > maxPersen) {
+           maxPersen = persen;
+           barisMirip = i + 2; 
+        }
+     }
+  }
+
+  if (maxPersen >= 100) peringatan = `FULL DUPLIKAT Baris ${barisMirip}`;
+  else if (maxPersen > 70) peringatan = `Sangat Mirip Baris ${barisMirip}`;
+  else if (maxPersen > 40) peringatan = `Mirip Baris ${barisMirip}`;
+  else if (maxPersen > 0) peringatan = `Sedikit Mirip Baris ${barisMirip}`;
+  else peringatan = `Aman`;
+
+  let targetRow = -1;
+  let status = 'baru';
+
+  if (lastRow > 1) {
+    const dataCek = sheet.getRange(2, 1, lastRow - 1, 4).getDisplayValues(); 
+    for (let i = 0; i < dataCek.length; i++) {
+       if (dataCek[i][1] == data.tanggal && String(dataCek[i][3]) == String(data.nik1)) {
+          targetRow = i + 2;
+          status = 'update';
+          if (barisMirip == targetRow) { maxPersen = 0; peringatan = 'Aman'; }
+          break;
+       }
+    }
+  }
+
+  if (status === 'baru') {
+     targetRow = lastRow + 1;
+     const nomor = lastRow === 0 ? 1 : lastRow;
+     sheet.getRange(targetRow, 1).setValue(nomor);
+  }
+
+  sheet.getRange(targetRow, 2, 1, 5).setValues([[data.tanggal, data.nama1, data.nik1, data.nama2 || '', data.nik2 || '']]);
+  
+  sheet.getRange(targetRow, 7, 1, 8).setValues([[
+    data.ggn, data.psb, data.unspek, data.tangible, data.gamas, data.preventif, data.lain, data.chatId
+  ]]);
+
+  sheet.getRange(targetRow, 7, 1, 7).setWrapStrategy(SpreadsheetApp.WrapStrategy.WRAP);
+  sheet.getRange(targetRow, 7, 1, 7).setVerticalAlignment('top'); 
+
+  sheet.getRange(targetRow, 15).setValue(`${maxPersen}%`);
+  sheet.getRange(targetRow, 16).setValue(peringatan);
+
+  return { status: status, persen: maxPersen, barisMirip: barisMirip, infoPeringatan: peringatan };
+}
+
+// --- 4. HITUNG KEMIRIPAN ---
+function hitungSimilarity(str1, str2) {
+  const clean1 = str1.replace(/[^a-z0-9 ]/g, "").trim().replace(/\s+/g, " ");
+  const clean2 = str2.replace(/[^a-z0-9 ]/g, "").trim().replace(/\s+/g, " ");
+  
+  if (clean1.length < 3 || clean2.length < 3) return 0;
+  if (clean1 === clean2) return 100; 
+
+  const words1 = clean1.split(" ");
+  const words2 = clean2.split(" ");
+  
+  let intersection = 0;
+  const set1 = new Set(words1);
+  const set2 = new Set(words2);
+  
+  set1.forEach(word => {
+     if (set2.has(word) && word.length > 2) intersection++;
+  });
+  
+  const totalUnik = set1.size;
+  if (totalUnik === 0) return 0;
+  return Math.floor((intersection / totalUnik) * 100);
+}
+
+// --- 5. FUNGSI WAJIB ---
+function setWebhook() {
+  const url = `${URL_API_TELEGRAM}/setWebhook?url=${URL_WEB_APP}`;
+  const response = UrlFetchApp.fetch(url);
+  Logger.log(response.getContentText());
+}
+
+function kirimPesanTelegram(chatId, teks, replyId) {
+  const url = `${URL_API_TELEGRAM}/sendMessage`;
+  const payload = { chat_id: String(chatId), text: teks, parse_mode: 'HTML', reply_to_message_id: replyId };
+  try { UrlFetchApp.fetch(url, { method: 'post', contentType: 'application/json', payload: JSON.stringify(payload) }); } catch (e) {}
+}
+
+function catatLog(pesan) {
+  try {
+    const ss = SpreadsheetApp.openById(ID_SPREADSHEET);
+    let sheet = ss.getSheetByName(NAMA_SHEET_LOG);
+    if (!sheet) { sheet = ss.insertSheet(NAMA_SHEET_LOG); sheet.appendRow(['Waktu', 'Pesan']); }
+    sheet.appendRow([new Date(), pesan]);
+  } catch (e) {}
+}
+
+ini kodenya
